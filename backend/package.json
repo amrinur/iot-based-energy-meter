@@ -1,0 +1,40 @@
+{
+  "name": "capstone-backend",
+  "version": "1.0.0",
+  "description": "Temperature monitoring system with Modbus RS485 and WebSocket",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "seed": "node database/seed.js --seed",
+    "seed:clear": "node database/seed.js --clear --seed",
+    "db:clear": "node database/seed.js --clear",
+    "db:test": "node database/test.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "modbus",
+    "temperature",
+    "websocket",
+    "sqlite",
+    "iot",
+    "monitoring"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "modbus-serial": "^8.0.23",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
