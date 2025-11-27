@@ -3,132 +3,191 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { useWebSocket } from '../../hooks/useWebSocket'
 import { energyAPI } from '../services/api'
 
+const metrics = [
+  { id: 'energy', label: 'Energi total', unit: 'kWh' },
+  { id: 'voltage', label: 'Tegangan', unit: 'V' },
+  { id: 'current', label: 'Arus', unit: 'A' },
+  { id: 'power', label: 'Daya aktif', unit: 'W' },
+  { id: 'pf', label: 'Faktor daya', unit: 'PF' },
+  { id: 'frequency', label: 'Frekuensi', unit: 'Hz' },
+]
+
+const metricColorMap = {
+  energy: '#ffc100',
+  voltage: '#ff318c',
+  current: '#fc9803',
+  power: '#8859ff',
+  pf: '#59d769',
+  frequency: '#4dabf7',
+}
+
 const Dashboard = () => {
   const { data: wsData, isConnected, modbusConnected } = useWebSocket()
 
-  const metrics = [
-    { id: 'energy', label: 'Energi total', unit: 'kWh' },
-    { id: 'voltage', label: 'Tegangan', unit: 'V' },
-    { id: 'current', label: 'Arus', unit: 'A' },
-    { id: 'power', label: 'Daya aktif', unit: 'W' },
-    { id: 'pf', label: 'Faktor daya', unit: 'PF' },
-    { id: 'frequency', label: 'Frekuensi', unit: 'Hz' },
-  ]
+  // Daftar device id (hardcode untuk 2 meter, atau ambil dari DB)
+  const [devices, setDevices] = useState(['TEM015XP_1', 'TEM015XP_2'])
 
-  const metricColorMap = {
-    energy: '#ffc100',
-    voltage: '#ff318c',
-    current: '#fc9803',
-    power: '#8859ff',
-    pf: '#59d769',
-    frequency: '#4dabf7',
-  }
-
-  const [selectedMetrics, setSelectedMetrics] = useState({ 1: 'voltage', 2: 'voltage' })
-  const [energyData, setEnergyData] = useState({ 1: null, 2: null })
-
-  // Chart data per meter per metric
-  const [chartData, setChartData] = useState({
-    1: { energy: [], voltage: [], current: [], power: [], pf: [], frequency: [] },
-    2: { energy: [], voltage: [], current: [], power: [], pf: [], frequency: [] },
-  })
+  // State per device_id
+  const [selectedMetrics, setSelectedMetrics] = useState({})
+  const [energyData, setEnergyData] = useState({})
+  const [chartData, setChartData] = useState({})
+  const [inlineExpanded, setInlineExpanded] = useState({})
+  const [expandedDeviceId, setExpandedDeviceId] = useState(null)
 
   const [loading, setLoading] = useState(true)
   const [lastUpdate, setLastUpdate] = useState(null)
 
-  // Expanded modal state (popup)
-  const [expandedMeterId, setExpandedMeterId] = useState(null)
+  // Helper: inisialisasi struktur chart untuk 1 device
+  const initChartSeries = () => ({
+    energy: [], voltage: [], current: [], power: [], pf: [], frequency: []
+  })
 
-  // Inline expand state (per card, memanjang ke bawah)
-  const [inlineExpanded, setInlineExpanded] = useState({ 1: false, 2: false })
-
-  // Load initial data
+  // Load initial data dari database
   useEffect(() => {
-    loadInitialData()
+    const loadData = async () => {
+      try {
+        // Load recent data untuk mendapatkan data per device
+        const response = await energyAPI.getAll(20, 0)
+        
+        // Initialize state
+        const initialMetrics = {}
+        const initialEnergy = {}
+        const initialCharts = {}
+        const initialExpanded = {}
+
+        devices.forEach(deviceId => {
+          initialMetrics[deviceId] = 'voltage'
+          initialEnergy[deviceId] = null
+          initialCharts[deviceId] = initChartSeries()
+          initialExpanded[deviceId] = false
+        })
+
+        if (response.success && response.data && response.data.length > 0) {
+          // Group data by device_id dan ambil yang terbaru per device
+          const dataByDevice = {}
+          response.data.forEach(reading => {
+            const deviceId = reading.device_id
+            if (!dataByDevice[deviceId]) {
+              dataByDevice[deviceId] = reading // Ambil yang pertama (terbaru)
+            }
+          })
+
+          // Set data per device
+          Object.entries(dataByDevice).forEach(([deviceId, data]) => {
+            if (devices.includes(deviceId)) {
+              initialEnergy[deviceId] = data
+
+              const time = new Date(data.timestamp).toLocaleTimeString('id-ID', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+              })
+
+              const seedPoint = {
+                energy: data.energy_total || 0,
+                voltage: data.voltage || 0,
+                current: data.current || 0,
+                power: data.active_power || 0,
+                pf: data.power_factor || 0,
+                frequency: data.frequency || 0,
+              }
+
+              initialCharts[deviceId] = Object.fromEntries(
+                Object.keys(seedPoint).map(k => [k, [{ time, value: seedPoint[k] }]])
+              )
+            }
+          })
+
+          // Set last update dari data terbaru
+          setLastUpdate(new Date(response.data[0].timestamp))
+        }
+
+        setSelectedMetrics(initialMetrics)
+        setEnergyData(initialEnergy)
+        setChartData(initialCharts)
+        setInlineExpanded(initialExpanded)
+        
+      } catch (error) {
+        console.error('Error loading initial data:', error)
+        
+        // Tetap initialize state meskipun error
+        const initialMetrics = {}
+        const initialEnergy = {}
+        const initialCharts = {}
+        const initialExpanded = {}
+
+        devices.forEach(deviceId => {
+          initialMetrics[deviceId] = 'voltage'
+          initialEnergy[deviceId] = null
+          initialCharts[deviceId] = initChartSeries()
+          initialExpanded[deviceId] = false
+        })
+
+        setSelectedMetrics(initialMetrics)
+        setEnergyData(initialEnergy)
+        setChartData(initialCharts)
+        setInlineExpanded(initialExpanded)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadData()
   }, [])
 
-  // Update from WebSocket
+  // Update dari WebSocket
   useEffect(() => {
-    if (wsData && wsData.type === 'energy_reading') {
-      const meterId = wsData.deviceId === 'TEM015XP_1' ? 1 : 2
-
-      setEnergyData(prev => ({ ...prev, [meterId]: wsData }))
-      setLastUpdate(new Date())
-
-      const time = new Date(wsData.timestamp).toLocaleTimeString('id-ID', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      })
-
-      const pointMap = {
-        energy: wsData.energy_total || 0,
-        voltage: wsData.voltage || 0,
-        current: wsData.current || 0,
-        power: wsData.active_power || 0,
-        pf: wsData.power_factor || 0,
-        frequency: wsData.frequency || 0,
-      }
-
-      setChartData(prev => {
-        const next = {
-          ...prev,
-          [meterId]: { ...prev[meterId] }
-        }
-
-        Object.keys(pointMap).forEach(key => {
-          const series = [...(prev[meterId][key] || [])]
-          series.push({ time, value: pointMap[key] })
-          if (series.length > 30) series.shift() // simpan 30 titik terakhir
-          next[meterId][key] = series
-        })
-
-        return next
-      })
+    if (!wsData) return
+    
+    console.log('📨 WebSocket data received:', wsData)
+    
+    if (wsData.type !== 'energy_reading') return
+    const deviceId = wsData.deviceId
+    if (!deviceId) {
+      console.warn('⚠️ No deviceId in wsData')
+      return
     }
+
+    console.log(`✅ Updating data for device: ${deviceId}`)
+
+    // Update energy data
+    setEnergyData(prev => ({ ...prev, [deviceId]: wsData }))
+    setLastUpdate(new Date())
+
+    const time = new Date(wsData.timestamp).toLocaleTimeString('id-ID', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+
+    const pointMap = {
+      energy: wsData.energy_total || 0,
+      voltage: wsData.voltage || 0,
+      current: wsData.current || 0,
+      power: wsData.active_power || 0,
+      pf: wsData.power_factor || 0,
+      frequency: wsData.frequency || 0,
+    }
+
+    // Update chart data
+    setChartData(prev => {
+      const next = { ...prev }
+      const base = prev[deviceId] || initChartSeries()
+      next[deviceId] = { ...base }
+
+      Object.keys(pointMap).forEach(key => {
+        const series = [...(base[key] || [])]
+        series.push({ time, value: pointMap[key] })
+        if (series.length > 30) series.shift()
+        next[deviceId][key] = series
+      })
+
+      return next
+    })
   }, [wsData])
 
-  const loadInitialData = async () => {
-    try {
-      const response = await energyAPI.getLatest()
-      if (response.success && response.data) {
-        setEnergyData({ 1: response.data, 2: response.data }) // demo: sama
-        setLastUpdate(new Date(response.data.timestamp))
-
-        // seed satu titik ke semua metrik agar chart tidak kosong
-        const time = new Date(response.data.timestamp).toLocaleTimeString('id-ID', {
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-        })
-        const seedPoint = {
-          energy: response.data.energy_total || 0,
-          voltage: response.data.voltage || 0,
-          current: response.data.current || 0,
-          power: response.data.active_power || 0,
-          pf: response.data.power_factor || 0,
-          frequency: response.data.frequency || 0,
-        }
-
-        setChartData({
-          1: Object.fromEntries(Object.keys(seedPoint).map(k => [k, [{ time, value: seedPoint[k] }]])),
-          2: Object.fromEntries(Object.keys(seedPoint).map(k => [k, [{ time, value: seedPoint[k] }]])),
-        })
-      }
-    } catch (error) {
-      console.error('Error loading initial data:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const energyMeters = [
-    { id: 1, name: 'ENERGY METER 1' },
-    { id: 2, name: 'ENERGY METER 2' },
-  ]
-
-  const getMetricValue = (meterId, metricId) => {
-    const data = energyData[meterId]
+  const getMetricValue = (deviceId, metricId) => {
+    const data = energyData[deviceId]
     if (!data) return '0'
     const valueMap = {
       energy: data.energy_total,
@@ -140,21 +199,22 @@ const Dashboard = () => {
     }
     const val = valueMap[metricId]
     if (val === null || val === undefined) return '0'
-    const digits = metricId === 'current' ? 3 : metricId === 'power' ? 1 : metricId === 'energy' ? 4 : metricId === 'pf' ? 3 : metricId === 'frequency' ? 2 : 2
+    const digits = metricId === 'current' ? 3
+      : metricId === 'power' ? 1
+      : metricId === 'energy' ? 4
+      : metricId === 'pf' ? 3
+      : metricId === 'frequency' ? 2
+      : 2
     return Number(val).toFixed(digits)
   }
 
-  const _handleMetricClick = (meterId, metricId) => {
-    setSelectedMetrics(prev => ({ ...prev, [meterId]: metricId }))
+  const toggleInlineExpand = (deviceId) => {
+    setInlineExpanded(prev => ({ ...prev, [deviceId]: !prev[deviceId] }))
   }
 
-  const toggleInlineExpand = (meterId) => {
-    setInlineExpanded(prev => ({ ...prev, [meterId]: !prev[meterId] }))
-  }
-
-  const chartGradient = (meterId, metricId) => (
+  const chartGradient = (deviceId, metricId) => (
     <defs>
-      <linearGradient id={`grad-${meterId}-${metricId}`} x1="0" y1="0" x2="0" y2="1">
+      <linearGradient id={`grad-${deviceId}-${metricId}`} x1="0" y1="0" x2="0" y2="1">
         <stop offset="5%" stopColor={metricColorMap[metricId]} stopOpacity={0.9} />
         <stop offset="95%" stopColor={metricColorMap[metricId]} stopOpacity={0} />
       </linearGradient>
@@ -176,7 +236,7 @@ const Dashboard = () => {
       <div className="max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-3xl font-semibold text-white mb-1 tracking-wide">Energy Monitoring</h1>
+            <h1 className="text-3xl font-semibold text-white mb-1 tracking-wide">Energy Monitoring Backup</h1>
             <p className="text-sm text-[#b0b0b0]">Realtime dashboard</p>
             {lastUpdate && (
               <p className="text-xs text-[#8a8a8a] mt-1">
@@ -184,21 +244,6 @@ const Dashboard = () => {
               </p>
             )}
           </div>
-
-          {/* <div className="flex items-center gap-3">
-            <div className={`px-4 py-2 rounded-full text-xs font-medium border flex items-center gap-2 ${
-              isConnected ? 'bg-green-900/20 text-green-400 border-green-500/30' : 'bg-red-900/20 text-red-400 border-red-500/30'
-            }`}>
-              <span className={`h-2 w-2 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`} />
-              <span>WebSocket</span>
-            </div>
-            <div className={`px-4 py-2 rounded-full text-xs font-medium border flex items-center gap-2 ${
-              modbusConnected ? 'bg-blue-900/20 text-blue-400 border-blue-500/30' : 'bg-yellow-900/20 text-yellow-400 border-yellow-500/30'
-            }`}>
-              <span className={`h-2 w-2 rounded-full ${modbusConnected ? 'bg-blue-400 animate-pulse' : 'bg-yellow-400'}`} />
-              <span>Modbus</span>
-            </div>
-          </div> */}
         </div>
 
         {isConnected && !modbusConnected && (
@@ -208,37 +253,34 @@ const Dashboard = () => {
         )}
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {energyMeters.map(meter => {
-            const selMetric = selectedMetrics[meter.id]
-            const series = chartData[meter.id][selMetric]
-            const safeSeries = (series && series.length > 0) ? series : [{ time: 'No data', value: 0 }]
-            const isInlineOpen = inlineExpanded[meter.id]
+          {devices.map((deviceId) => {
+            const selMetric = selectedMetrics[deviceId] || 'voltage'
+            const series = chartData[deviceId]?.[selMetric] || []
+            const safeSeries = series.length > 0 ? series : [{ time: 'No data', value: 0 }]
+            const isInlineOpen = !!inlineExpanded[deviceId]
 
             return (
               <div
-                key={meter.id}
+                key={deviceId}
                 className={`rounded-xl bg-[#313335] border border-[#4e5254] shadow-[0_4px_18px_-4px_rgba(0,0,0,0.6)] overflow-hidden hover:shadow-purple-900 transition-all duration-300 ${isInlineOpen ? 'xl:col-span-2' : ''}`}
               >
                 <div className="px-6 py-4 border-b border-[#4e5254] bg-[#3c3f41] flex items-center justify-between">
                   <div>
-                    <h2 className="text-sm font-medium tracking-wider text-white">{meter.name}</h2>
+                    <h2 className="text-sm font-medium tracking-wider text-white">{deviceId}</h2>
                     <p className="text-[10px] mt-1 text-[#b0b0b0] uppercase">Selected: {selMetric}</p>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {/* Tombol baru: Expand Down (inline) */}
                     <button
                       type="button"
-                      onClick={() => toggleInlineExpand(meter.id)}
+                      onClick={() => toggleInlineExpand(deviceId)}
                       className="text-xs px-3 py-1 rounded-md bg-[#2b2b2b] text-white border border-[#4e5254] hover:border-[#8859ff]"
                     >
                       {isInlineOpen ? 'Collapse' : 'Expand Down'}
                     </button>
-
-                    {/* Tombol lama: Popup modal */}
                     <button
                       type="button"
-                      onClick={() => setExpandedMeterId(meter.id)}
+                      onClick={() => setExpandedDeviceId(deviceId)}
                       className="text-xs px-3 py-1 rounded-md bg-[#2b2b2b] text-white border border-[#4e5254] hover:border-[#8859ff]"
                     >
                       Popup
@@ -247,11 +289,10 @@ const Dashboard = () => {
                 </div>
 
                 <div className="p-6">
-                  {/* Chart utama (selected metric) */}
                   <div className="rounded-lg bg-[#2b2b2b] border border-[#4e5254] mb-6 h-[220px]">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={safeSeries}>
-                        {chartGradient(meter.id, selMetric)}
+                        {chartGradient(deviceId, selMetric)}
                         <CartesianGrid strokeDasharray="3 3" stroke="#4e5254" strokeOpacity={0.35} />
                         <XAxis
                           dataKey="time"
@@ -280,13 +321,12 @@ const Dashboard = () => {
                           stroke={lineStroke(selMetric)}
                           strokeWidth={2.4}
                           dot={false}
-                          fill={`url(#grad-${meter.id}-${selMetric})`}
+                          fill={`url(#grad-${deviceId}-${selMetric})`}
                         />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
 
-                  {/* Tombol metric */}
                   <div className="grid grid-cols-3 gap-4">
                     {metrics.map(metric => {
                       const active = selMetric === metric.id
@@ -294,7 +334,7 @@ const Dashboard = () => {
                         <button
                           type="button"
                           key={metric.id}
-                          onClick={() => setSelectedMetrics(prev => ({ ...prev, [meter.id]: metric.id }))}
+                          onClick={() => setSelectedMetrics(prev => ({ ...prev, [deviceId]: metric.id }))}
                           className={`
                             group flex flex-col items-center justify-center rounded-md px-2 py-3 text-center
                             border transition relative
@@ -305,7 +345,7 @@ const Dashboard = () => {
                           `}
                         >
                           <span className={`text-lg font-semibold ${active ? 'text-white' : 'text-[#e0e0e0]'}`}>
-                            {getMetricValue(meter.id, metric.id)}
+                            {getMetricValue(deviceId, metric.id)}
                             <span className="text-[11px] ml-1 font-medium text-[#b0b0b0]">{metric.unit}</span>
                           </span>
                           <span className="mt-1 text-[10px] tracking-wide text-[#b0b0b0]">
@@ -316,12 +356,11 @@ const Dashboard = () => {
                     })}
                   </div>
 
-                  {/* Inline expanded section: tampilkan semua grafik metrik */}
                   {isInlineOpen && (
                     <div className="mt-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
                       {metrics.map(metric => {
-                        const s = chartData[meter.id][metric.id]
-                        const safeS = (s && s.length > 0) ? s : [{ time: 'No data', value: 0 }]
+                        const s = chartData[deviceId]?.[metric.id] || []
+                        const safeS = s.length > 0 ? s : [{ time: 'No data', value: 0 }]
                         return (
                           <div key={metric.id} className="rounded-lg bg-[#2b2b2b] border border-[#4e5254] h-[220px] p-3">
                             <div className="text-xs text-[#b0b0b0] mb-2">
@@ -329,7 +368,7 @@ const Dashboard = () => {
                             </div>
                             <ResponsiveContainer width="100%" height="80%">
                               <LineChart data={safeS}>
-                                {chartGradient(meter.id, metric.id)}
+                                {chartGradient(deviceId, metric.id)}
                                 <CartesianGrid strokeDasharray="3 3" stroke="#4e5254" strokeOpacity={0.35} />
                                 <XAxis
                                   dataKey="time"
@@ -358,7 +397,7 @@ const Dashboard = () => {
                                   stroke={lineStroke(metric.id)}
                                   strokeWidth={2.2}
                                   dot={false}
-                                  fill={`url(#grad-${meter.id}-${metric.id})`}
+                                  fill={`url(#grad-${deviceId}-${metric.id})`}
                                 />
                               </LineChart>
                             </ResponsiveContainer>
@@ -374,27 +413,29 @@ const Dashboard = () => {
         </div>
       </div>
 
-      {/* Expanded Modal: tampilkan semua grafik metrik untuk meter terpilih */}
-      {expandedMeterId && (
+      {/* Popup modal */}
+      {expandedDeviceId && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
           <div className="w-full max-w-7xl max-h-[90vh] overflow-auto rounded-xl bg-[#313335] border border-[#4e5254] shadow-2xl">
             <div className="px-6 py-4 bg-[#3c3f41] border-b border-[#4e5254] flex items-center justify-between sticky top-0">
-              <div className="flex items-center gap-3">
-                <h3 className="text-white text-sm font-medium tracking-wider">
-                  {expandedMeterId === 1 ? 'ENERGY METER 1' : 'ENERGY METER 2'} — Semua Grafik
-                </h3>
-              </div>
+              <h3 className="text-white text-sm font-medium tracking-wider">
+                {expandedDeviceId} — Semua Grafik
+              </h3>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setExpandedMeterId(expandedMeterId === 1 ? 2 : 1)}
+                  onClick={() => {
+                    const idx = devices.findIndex(d => d === expandedDeviceId)
+                    const next = devices[(idx + 1) % devices.length]
+                    setExpandedDeviceId(next)
+                  }}
                   className="text-xs px-3 py-1 rounded-md bg-[#2b2b2b] text-white border border-[#4e5254] hover:border-[#8859ff]"
                 >
-                  {expandedMeterId === 1 ? 'Switch ke Meter 2' : 'Switch ke Meter 1'}
+                  Switch Device
                 </button>
                 <button
                   type="button"
-                  onClick={() => setExpandedMeterId(null)}
+                  onClick={() => setExpandedDeviceId(null)}
                   className="text-xs px-3 py-1 rounded-md bg-red-600/80 text-white hover:bg-red-600"
                 >
                   Close
@@ -404,8 +445,8 @@ const Dashboard = () => {
 
             <div className="p-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
               {metrics.map(metric => {
-                const series = chartData[expandedMeterId][metric.id]
-                const safeSeries = (series && series.length > 0) ? series : [{ time: 'No data', value: 0 }]
+                const series = chartData[expandedDeviceId]?.[metric.id] || []
+                const safeSeries = series.length > 0 ? series : [{ time: 'No data', value: 0 }]
                 return (
                   <div key={metric.id} className="rounded-lg bg-[#2b2b2b] border border-[#4e5254] h-[260px] p-3">
                     <div className="text-xs text-[#b0b0b0] mb-2">
@@ -413,7 +454,7 @@ const Dashboard = () => {
                     </div>
                     <ResponsiveContainer width="100%" height="90%">
                       <LineChart data={safeSeries}>
-                        {chartGradient(expandedMeterId, metric.id)}
+                        {chartGradient(expandedDeviceId, metric.id)}
                         <CartesianGrid strokeDasharray="3 3" stroke="#4e5254" strokeOpacity={0.35} />
                         <XAxis
                           dataKey="time"
@@ -442,7 +483,7 @@ const Dashboard = () => {
                           stroke={lineStroke(metric.id)}
                           strokeWidth={2.2}
                           dot={false}
-                          fill={`url(#grad-${expandedMeterId}-${metric.id})`}
+                          fill={`url(#grad-${expandedDeviceId}-${metric.id})`}
                         />
                       </LineChart>
                     </ResponsiveContainer>

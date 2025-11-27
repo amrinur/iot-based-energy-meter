@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { energyAPI } from '../services/api'
+import { exportHistoryCsv } from '../components/exportCsv'
 
 const History = () => {
   const [readings, setReadings] = useState([])
@@ -13,17 +14,40 @@ const History = () => {
   const [endDate, setEndDate] = useState('')
   const [isFiltering, setIsFiltering] = useState(false)
 
+  const [deviceId, setDeviceId] = useState('')
+  const [devices, setDevices] = useState([])
+
+  useEffect(() => {
+    fetchDevices()
+  }, [])
+
   useEffect(() => {
     loadReadings()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [limit, offset])
+  }, [limit, offset, deviceId])
+
+  const fetchDevices = async () => {
+    try {
+      const res = await energyAPI.getDevices()
+      if (res?.success && Array.isArray(res.data)) {
+        setDevices(res.data)
+      }
+    } catch (e) {
+      console.warn('Gagal memuat daftar device', e)
+    }
+  }
 
   const loadReadings = async () => {
     if (isFiltering) return
     setLoading(true)
     setError(null)
     try {
-      const res = await energyAPI.getAll(limit, offset)
+      let res
+      if (deviceId) {
+        res = await energyAPI.getAllByDevice(deviceId, limit, offset)
+      } else {
+        res = await energyAPI.getAll(limit, offset)
+      }
       if (res?.success) setReadings(res.data || [])
     } catch (e) {
       setError('Gagal memuat data')
@@ -38,11 +62,20 @@ const History = () => {
       alert('Pilih Start Date dan End Date')
       return
     }
+    if (new Date(endDate) < new Date(startDate)) {
+      alert('End Date tidak boleh lebih kecil dari Start Date')
+      return
+    }
     setIsFiltering(true)
     setLoading(true)
     setError(null)
     try {
-      const res = await energyAPI.getByDateRange(startDate, endDate)
+      let res
+      if (deviceId) {
+        res = await energyAPI.getByDeviceAndDateRange(deviceId, startDate, endDate)
+      } else {
+        res = await energyAPI.getByDateRange(startDate, endDate)
+      }
       if (res?.success) {
         setReadings(res.data || [])
         setOffset(0)
@@ -60,32 +93,20 @@ const History = () => {
     setEndDate('')
     setIsFiltering(false)
     setOffset(0)
+    setDeviceId('')
     loadReadings()
   }
 
+  const pageCount = readings.length
   const canPrev = useMemo(() => offset > 0, [offset])
-  const canNext = useMemo(() => !isFiltering && readings.length === limit, [isFiltering, readings.length, limit])
+  const canNext = useMemo(() => !isFiltering && pageCount === limit, [isFiltering, pageCount, limit])
 
-  const exportCSV = () => {
-    if (!readings?.length) return
-    const header = ['Timestamp', 'Voltage (V)', 'Current (A)', 'Power (W)', 'PF', 'Frequency (Hz)', 'Energy (kWh)']
-    const rows = readings.map(r => ([
-      new Date(r.timestamp).toLocaleString('id-ID'),
-      safeNum(r.voltage, 2),
-      safeNum(r.current, 3),
-      safeNum(r.active_power, 1),
-      safeNum(r.power_factor, 3),
-      safeNum(r.frequency, 2),
-      safeNum(r.energy_total, 4),
-    ]))
-    const csv = [header, ...rows].map(cols => cols.join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `energy_history_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+  const handleStartDateChange = (e) => {
+    const newStart = e.target.value
+    setStartDate(newStart)
+    if (!endDate) {
+      setEndDate(newStart)
+    }
   }
 
   return (
@@ -94,12 +115,11 @@ const History = () => {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-3xl font-semibold text-white mb-1 tracking-wide">History Data</h1>
-            <p className="text-sm text-[#b0b0b0]">Riwayat pembacaan energi TEM015XP</p>
+            <p className="text-sm text-[#b0b0b0]">Riwayat pembacaan energi TEM015XP multi-device</p>
           </div>
-
           <div className="flex items-center gap-2">
             <button
-              onClick={exportCSV}
+              onClick={() => exportHistoryCsv(readings)}
               className="px-4 py-2 rounded-md text-sm font-medium bg-[#3c3f41] border border-[#4e5254] text-white hover:border-[#8859ff]"
             >
               Export CSV
@@ -107,61 +127,81 @@ const History = () => {
           </div>
         </div>
 
-        {/* Filter & Controls */}
         <div className="rounded-xl bg-[#313335] border border-[#4e5254] mb-6">
           <div className="px-6 py-4 border-b border-[#4e5254] bg-[#3c3f41]">
             <h2 className="text-sm font-medium tracking-wider text-white">Filter</h2>
           </div>
 
-          <div className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div>
-              <label className="block text-xs text-[#b0b0b0] mb-1">Start Date</label>
-              <input
-                type="datetime-local"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="w-full bg-[#2b2b2b] text-white border border-[#4e5254] rounded px-3 py-2 focus:outline-none focus:border-[#8859ff]"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-[#b0b0b0] mb-1">End Date</label>
-              <input
-                type="datetime-local"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="w-full bg-[#2b2b2b] text-white border border-[#4e5254] rounded px-3 py-2 focus:outline-none focus:border-[#8859ff]"
-              />
-            </div>
-            <div className="flex items-end gap-3">
-              <button
-                onClick={handleFilter}
-                className="px-4 py-2 rounded-md text-sm font-medium bg-blue-600 text-white hover:bg-blue-500"
-              >
-                Apply
-              </button>
-              <button
-                onClick={resetFilter}
-                className="px-4 py-2 rounded-md text-sm font-medium bg-gray-600 text-white hover:bg-gray-500"
-              >
-                Reset
-              </button>
-            </div>
-            <div className="flex items-end justify-end gap-3">
+            <div className="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
               <div>
-                <label className="block text-xs text-[#b0b0b0] mb-1">Rows per page</label>
+                <label className="block text-xs text-[#b0b0b0] mb-1">Device</label>
                 <select
-                  value={limit}
-                  onChange={(e) => { setOffset(0); setLimit(Number(e.target.value)) }}
-                  className="bg-[#2b2b2b] text-white border border-[#4e5254] rounded px-3 py-2 focus:outline-none focus:border-[#8859ff]"
+                  value={deviceId}
+                  onChange={(e) => {
+                    setOffset(0)
+                    setDeviceId(e.target.value)
+                  }}
+                  className="w-full bg-[#2b2b2b] text-white border border-[#4e5254] rounded px-3 py-2 focus:outline-none focus:border-[#8859ff]"
                 >
-                  {[10, 25, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
+                  <option value=''>All</option>
+                  {devices.map(d => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
                 </select>
               </div>
+              <div>
+                <label className="block text-xs text-[#b0b0b0] mb-1">Start Date</label>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={handleStartDateChange}
+                  className="w-full bg-[#2b2b2b] text-white border border-[#4e5254] rounded px-3 py-2 focus:outline-none focus:border-[#8859ff]"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-[#b0b0b0] mb-1">End Date</label>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  min={startDate}
+                  className="w-full bg-[#2b2b2b] text-white border border-[#4e5254] rounded px-3 py-2 focus:outline-none focus:border-[#8859ff]"
+                />
+              </div>
+              <div className="flex items-end gap-3">
+                <button
+                  onClick={handleFilter}
+                  className="px-4 py-2 rounded-md text-sm font-medium bg-blue-600 text-white hover:bg-blue-500"
+                >
+                  Apply
+                </button>
+                <button
+                  onClick={resetFilter}
+                  className="px-4 py-2 rounded-md text-sm font-medium bg-gray-600 text-white hover:bg-gray-500"
+                >
+                  Reset
+                </button>
+              </div>
+              <div className="flex items-end">
+                <div className="w-full">
+                  <label className="block text-xs text-[#b0b0b0] mb-1">Rows per page</label>
+                  <select
+                    value={limit}
+                    onChange={(e) => {
+                      setOffset(0)
+                      setLimit(Number(e.target.value))
+                    }}
+                    className="w-full bg-[#2b2b2b] text-white border border-[#4e5254] rounded px-3 py-2 focus:outline-none focus:border-[#8859ff]"
+                  >
+                    {[10, 25, 50, 100].map(n => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </div>
-          </div>
         </div>
 
-        {/* Table */}
         <div className="rounded-xl bg-[#313335] border border-[#4e5254] overflow-hidden">
           <div className="px-6 py-4 border-b border-[#4e5254] bg-[#3c3f41] flex items-center justify-between">
             <h2 className="text-sm font-medium tracking-wider text-white">Tabel Riwayat</h2>
@@ -190,7 +230,7 @@ const History = () => {
                   Next
                 </button>
                 <span className="text-xs text-[#b0b0b0] ml-2">
-                  {isFiltering ? 'Filtered results' : `Offset ${offset}`}
+                  Page {Math.floor(offset / limit) + 1} · Rows {pageCount}
                 </span>
               </div>
             )}
@@ -207,6 +247,7 @@ const History = () => {
               <table className="min-w-full">
                 <thead className="bg-[#2f3133]">
                   <tr className="text-left">
+                    <Th>Device</Th>
                     <Th>Timestamp</Th>
                     <Th>Voltage (V)</Th>
                     <Th>Current (A)</Th>
@@ -217,8 +258,9 @@ const History = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {readings.map((r) => (
+                  {readings.map(r => (
                     <tr key={r.id} className="border-t border-[#4e5254] hover:bg-[#373a3c]">
+                      <Td>{r.device_id || '-'}</Td>
                       <Td>{new Date(r.timestamp).toLocaleString('id-ID')}</Td>
                       <Td mono>{safeNum(r.voltage, 2)}</Td>
                       <Td mono>{safeNum(r.current, 3)}</Td>
@@ -256,8 +298,7 @@ function Td({ children, mono = false }) {
 
 function safeNum(val, digits = 2) {
   if (val === null || val === undefined || Number.isNaN(Number(val))) return '-'
-  const n = Number(val)
-  return n.toFixed(digits)
+  return Number(val).toFixed(digits)
 }
 
 export default History
